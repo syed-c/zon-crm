@@ -425,12 +425,109 @@ npm run lint         # Run ESLint
 ### Supabase Integration for Dynamic Dashboard
 - Added Supabase client:
   - `lib/supabaseClient.ts` using `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+
+## 2025-09-17 – Tasks page migrated to Supabase
+
+Context: `/tasks` previously used Convex APIs and some hardcoded/demo data. We migrated it to Supabase REST to align with the rest of the app and Vercel deployment.
+
+Changed files:
+
+- `components/tasks-page-content.tsx`
+  - Removed Convex `useQuery`/`useMutation` usage and imports.
+  - Added Supabase client usage to:
+    - Fetch projects from `projects (id,name)`.
+    - Fetch tasks by `project_id` and compute simple stats client-side.
+    - Insert, update status, and delete tasks through Supabase.
+  - Adjusted schema expectations to match current DB:
+    - Dropped `description` and `priority` from Supabase select/insert because these columns do not exist in the user's DB.
+    - UI still shows description/priority for now; description is not sent, priority badge is visual only.
+  - Normalized task status values to match Supabase enum:
+    - `pending`, `in_progress`, `completed`, `blocked`.
+    - New tasks default to `pending`.
+  - Made component resilient to either `id` (Supabase) or legacy `_id` keys when rendering/updating/deleting.
+  - Kept existing styling and UX intact.
+
+Deployment notes:
+
+- Ensure environment variables are set on Vercel:
+  - `NEXT_PUBLIC_SUPABASE_URL`
+  - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- The tasks queries assume the following columns exist in Supabase:
+  - `tasks`: `id`, `project_id`, `title`, `status`, `due_date`, `created_at`.
+  - Optional: add nullable `description text`, `priority text` to persist those fields. If added, re-enable sending `description` and `priority` in `tasks-page-content.tsx` (search for commented lines near `insertPayload`).
+- Status enum in DB must include: `pending`, `in_progress`, `completed`, `blocked`.
+
+RLS policies (example):
+
+```sql
+-- Read tasks for everyone (adjust as needed)
+create policy if not exists "tasks read" on public.tasks for select using (true);
+
+-- Write tasks for authenticated users
+create policy if not exists "tasks write" on public.tasks for all to authenticated using (true) with check (true);
+```
+
+Known limitations after migration:
+
+- Content page migration to Supabase
+  - `components/content-page-content.tsx` now fetches from `content` table and writes via Supabase.
+  - To prevent 400 errors from missing columns, reads are limited to guaranteed fields: `id,title,status,created_at`.
+  - Create Content inserts `title` and `status` by default; optionally sends `url` and `project_id`. Additional optional columns like `target_keyword`, `word_count`, `file_url` are commented out in code until present in DB.
+  - UI displays URL only if available and supports snake_case fields (`target_keyword`, `word_count`).
+  - Tabs counts are computed client-side from fetched rows.
+
+  Storage upload support
+  - Added file upload in the create content dialog. Files are uploaded to Supabase Storage bucket defined by env `NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET` (defaults to `content`).
+  - After successful upload, the public URL is saved in `file_url` if the column exists, otherwise the insert retries without it.
+  - For uploads to work, create a bucket in Supabase named to match the env var and set appropriate public/private policies.
+
+  RLS / Policies
+  Review flow mapping
+  - DB enum for `content.status` allows `draft` and `published` only.
+  - Submit for Review keeps content as `draft` but sets the related project's status to `in_progress` (falls back to `active` if enum missing).
+  - The "In Progress" tab shows content whose linked project's status is `in_progress`.
+  - The "Draft" tab hides items whose project is already `in_progress`.
+  - Implementation detail: We treat project status `active` in Supabase as UI `In Progress` and map badges and counters accordingly. Counts and filters are computed client-side.
+  - For the `In Progress` state, card action shows "Start Work" instead of "Submit for Review".
+  - Added "View File" (opens `file_url`) and an "Edit" dialog for draft items to update title, url, and file. Edit is hidden once project is `in_progress` or content leaves draft.
+  - After submitting, UI switches the tab to In Progress for immediate feedback.
+  - Ensure RLS policies for `public.content` allow select/insert/update/delete for your chosen roles (anon/authenticated) or proxy writes via a server route with service role.
+
+  Schema expectations for best experience:
+  - `content(id uuid, title text, status text, created_at timestamptz default now())`
+  - In current DB (`content_status` enum): allowed statuses are `draft` and `published`. UI maps:
+    - Submit for Review: keeps `draft` (informational only)
+    - Approve: sets `published`
+    - Reject: sets `draft`
+  - Optional: `url text, target_keyword text, word_count int, project_id uuid, deadline timestamptz, updated_at timestamptz, file_url text`
+
+- Priority shown in UI is not persisted unless you add `priority` column.
+- Description input is not stored unless you add `description` column.
+
 - Services layer for dashboard data:
   - `services/dashboardData.ts`: metrics counts, task status distribution, and recent activity loaders.
 - Dashboard components updated to live data with loading/error states:
   - `components/dashboard/kpi-widgets.tsx`
   - `components/dashboard/task-progress-chart.tsx`
   - `components/dashboard/recent-activity.tsx`
+
+### Content Page Overhaul (2025-09-17)
+
+- Rebuilt `components/content-page-content.tsx` to mirror the `/tasks` flow.
+- Added project selector, monthly change and in-progress stats.
+- New create dialog after selecting a project with required fields: Title, Description, Page URL, Keywords, File upload.
+- Status lanes: In Progress, Under Review, Completed, Disapproved.
+- Actions:
+  - In Progress: View, Submit for Review, Delete.
+  - Under Review: View, Approve, Disapprove.
+  - Completed/Disapproved: read-only badges.
+- Implementation detail to avoid Supabase enum errors on `content.status`:
+  - In Progress derived from `projects.status === "active"`.
+  - Under Review/Disapproved tracked via local persisted flags until enum is extended.
+  - Approve writes `content.status = 'published'`.
+- File uploads go to Supabase Storage bucket defined by `NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET`.
+
+Future migration (optional): add `in_progress`, `under_review`, `disapproved` to `content.status` enum and switch UI to rely solely on `content.status`.
 
 ### Sidebar UX Improvements
 ### Projects Section (Supabase-backed)

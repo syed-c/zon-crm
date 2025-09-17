@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Plus, Building, Globe, Mail, Phone, FolderOpen, BarChart3, Users } from "lucide-react";
 import { toast } from "sonner";
 import { fetchClients, createClient as createClientSb } from "@/services/clientsService";
+import { supabase } from "@/lib/supabaseClient";
 
 export default function ClientsPageContent() {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
@@ -18,6 +19,8 @@ export default function ClientsPageContent() {
   const [clients, setClients] = useState<{ id: string; name: string; website?: string | null; email?: string | null }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+  const [clientProjects, setClientProjects] = useState<Array<{ id: string; name: string; status?: string | null; due_date?: string | null; slug?: string | null }>>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,6 +36,47 @@ export default function ClientsPageContent() {
     })();
     return () => { cancelled = true };
   }, []);
+
+  // Load projects for selected client
+  useEffect(() => {
+    if (!selectedClient) {
+      setClientProjects([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setProjectsLoading(true);
+      // Try with optional columns first; fall back if they don't exist
+      let sel = "id,name,status,due_date,slug,client_id";
+      let q = await supabase
+        .from("projects")
+        .select(sel)
+        .eq("client_id", selectedClient)
+        .order("created_at", { ascending: false });
+      let data = q.data;
+      let err = q.error;
+      if (err && (err.code === "42703" || err.code === "PGRST204")) {
+        const retry = await supabase
+          .from("projects")
+          .select("id,name,client_id")
+          .eq("client_id", selectedClient)
+          .order("created_at", { ascending: false });
+        data = retry.data as any;
+        err = retry.error as any;
+      }
+      if (!cancelled) {
+        if (err) {
+          // eslint-disable-next-line no-console
+          console.error("Failed to load client projects", err);
+          setClientProjects([]);
+        } else {
+          setClientProjects((data as any[]) || []);
+        }
+        setProjectsLoading(false);
+      }
+    })();
+    return () => { cancelled = true };
+  }, [selectedClient]);
 
   const handleCreateClient = async (formData: FormData) => {
     try {
@@ -279,7 +323,7 @@ export default function ClientsPageContent() {
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-sm font-medium text-gray-400">Total Projects</p>
-                        <p className="text-2xl font-bold text-white">—</p>
+                        <p className="text-2xl font-bold text-white">{clientProjects.length}</p>
                       </div>
                       <FolderOpen className="w-8 h-8 text-gray-400" />
                     </div>
@@ -296,10 +340,34 @@ export default function ClientsPageContent() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="text-center py-8">
-                    <FolderOpen className="w-12 h-12 text-gray-500 mx-auto mb-4" />
-                    <p className="text-gray-400">No projects for this client yet.</p>
-                  </div>
+                  {projectsLoading ? (
+                    <div className="text-center py-8 text-gray-400">Loading projects…</div>
+                  ) : clientProjects.length === 0 ? (
+                    <div className="text-center py-8">
+                      <FolderOpen className="w-12 h-12 text-gray-500 mx-auto mb-4" />
+                      <p className="text-gray-400">No projects for this client yet.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {clientProjects.map((p) => (
+                        <div key={p.id} className="p-4 rounded-lg border border-gray-700 bg-[#121212]">
+                          <div className="flex items-center justify-between">
+                            <span className="text-white font-medium">{p.name}</span>
+                            {p.status && (
+                              <Badge className="bg-gray-700 text-white">{p.status}</Badge>
+                            )}
+                          </div>
+                          {(p.due_date || p.slug) && (
+                            <div className="text-xs text-gray-500 mt-2">
+                              {p.due_date && <span>Due: {new Date(p.due_date as any).toLocaleDateString()}</span>}
+                              {p.due_date && p.slug && <span> · </span>}
+                              {p.slug && <span>Slug: {p.slug}</span>}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>
